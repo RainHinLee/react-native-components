@@ -1,3 +1,13 @@
+/*---使用webview中的h5 video 来实现video的播放；
+		
+		<H5Player 
+			src={require('../../../../assets/media/Jeff.mp4')} 
+			poster={require('../../../../assets/images/lilian.jpg')}
+			autoplay={true}
+			fullscreen={true}
+		/>
+
+*/
 
 import React, { Component, PropTypes } from 'react';
 import {
@@ -11,36 +21,39 @@ import {
 	StatusBar,
 	Text,
 	BackHandler,
-	Slider
+	WebView,
+	Slider,
 } from 'react-native';
+
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import IconF from 'react-native-vector-icons/Foundation';
-import Video from 'react-native-video'; 
 import  * as Animatable from 'react-native-animatable';
 import {Grid,Row,Col} from 'react-native-easy-grid';
 import {connect} from 'react-redux';
 
+import parseHtml from './html.js'
+
 const {width,height} = Dimensions.get('window');
 const ratio = 9/16;
 
-class Player extends Component{
-	
+class H5Player extends Component{
 	constructor(props){
 		super(props)
 		this.state={
 			isStarting: this.props.autoplay,  //--是否开始
-			paused: this.props.fullscreen ? true : false, //--是否暂停
+			paused: !this.props.autoplay,  //--是否自动播放
 			currentTime: 0, //--当前播放时间；
 			volume:true,  //--音量
 		};
+		
 		this.duration = 0;
 		this.timelineWidth = 0;
-		this.changeFullscreen = false;
-		this.showControls = true;
-		this.videoInited = false;  //--是否初始化了video组件
-		this.initPaused = false;   //---针对初次全屏屏幕切换时，普通屏传过来的暂停状态；
-		this.exitFullscreenHandler = this.exitFullscreen.bind(this)
-	}
+		this.changeFullscreen = false;  //--是否切换全屏
+		this.seekingBeforePaused= false; //--快进时视频是否暂停
+		this.seekStarting = false; //--是否开始拖动进度条
+		this.showControls = true; //--是否显示控制条
+		this.exitFullscreenHandler = this.exitFullscreen.bind(this)		
+	}	
 	
   	getSizeStyles() { //--获取尺寸
   		if(this.props.fullscreen){  
@@ -56,40 +69,95 @@ class Player extends Component{
   		}
   	}	
   	
-  	onStartPress(){ //--开始按钮点击
-  		this.setState({isStarting:true})
-  	}
-  	
-  	onLoaded(ev){ //--视频加载完成
-  		this.duration = ev.duration;
-  		if(this.props.fullscreen && this.props.player.isFullscreen){
-  			this.refs.player && this.refs.player.seek(this.state.currentTime);
-  			
-  			setTimeout(()=>{
-  				this.setState({
-  					paused: this.initPaused,   //---处理视频初次加载时不能暂停bug
-  				})
-  			},50)
-  		}
-  	}
-  	
-  	onEnd(){ //--视频播放完成
+	getHtml(){
+		return parseHtml(this.props,this.getSizeStyles());
+	}
+	
+	onStartPress(){
+		this.setState({
+			isStarting:true,
+			paused:false,
+		})
+	}
+	
+	onMessage(ev){  //--接受webview侧的通信信息
+		let data = JSON.parse(ev.nativeEvent.data);
+		let type = data.type;
+		
+		switch(type){
+			case 'duration': //--获取到总时间
+				this.duration = data.time;
+				break;
+			case 'update':  //--播放进行
+				this.setState({
+					currentTime:data.time
+				});
+				break;
+			case 'ended': //--播放完毕
+				this.setState({
+		  			isStarting:false,
+		  			paused:false,
+		  			currentTime:0,
+		  			volume:true,
+				})
+		};
+		
+	}
+	
+ 	exitFullscreen(){  //---android回退键
+ 		this.toggleFullscreen();
+		BackHandler.removeEventListener('hardwareBackPress',this.exitFullscreenHandler)//--注销android回退键
+ 		return true;
+ 	}
+ 	
+	toggleControls(){ //--显示控制条
+		clearTimeout(this.timer);
+		if(this.showControls){
+			this.refs.controls.transitionTo({bottom: 0},100,'linear');
+			this.timer = setTimeout(()=>{
+				this.refs.controls.transitionTo({bottom: -60},100,'linear');
+				this.showControls = true;
+			},5000)
+		}else{
+			this.refs.controls.transitionTo({bottom: -60},100,'linear')	
+		};
+		
+		this.showControls = !this.showControls;
+	}	
+	
+  	togglePaused(){
+  		let type = this.state.paused ? 'play' : 'pause';
   		this.setState({
-  			isStarting:false,
-  			paused:false,
-  			currentTime:0,
-  			volume:true,
-  		})
-  	}
-  	
-  	onProgress(ev){  //---视频进行中
-  		this.setState({
-  			currentTime:ev.currentTime,
+  			paused: !this.state.paused
   		});
-  	}
+  		this.refs.webview.postMessage(JSON.stringify({type}));
+  	}	
   	
+ 	toggleVolume(){ //--音量切换
+ 		let type = this.state.volume ? 'muted' : 'volume';
+   		this.setState({
+  			volume: !this.state.volume
+  		});
+
+  		this.refs.webview.postMessage(JSON.stringify({type}));
+
+ 	}
+ 	
+	toggleFullscreen(){ //--切换全屏
+ 		let type = this.props.fullscreen ? 'exitFullscreen' : 'fullscreen'
+ 		
+		this.props.dispatch({
+			type,
+			...this.state
+		});	
+	}
+	
   	seeking(value){  //--时间轴滑动中
   		let time = this.duration * value
+  		let data={
+  			type:'seeking',
+  			time,
+  		};
 
   		if(!this.seekStarting){
   			this.seekStarting = true;
@@ -99,6 +167,7 @@ class Player extends Component{
   		this.setState({
   			paused:true,
   		})
+  		this.refs.webview.postMessage(JSON.stringify(data));
   	}
   	
   	seeked(value){  //--时间轴滑动结束
@@ -106,56 +175,19 @@ class Player extends Component{
   			value = 0.99;
   		}
   		let time = this.duration * value;
-
+  		let data={
+  			type:'seeked',
+  			time,
+  			paused: this.seekingBeforePaused,
+  		}
+  		
   		this.seekStarting = false;
    		this.setState({
   			paused:this.seekingBeforePaused,
-  			currentTime: time,
-  		});
-  		this.refs.player.seek(time)
-  	} 
-	
-  	togglePause(){
-  		this.setState({
-  			paused: !this.state.paused
   		})
+  		this.refs.webview.postMessage(JSON.stringify(data));
   	}
- 
- 	toggleVolume(){
-   		this.setState({
-  			volume: !this.state.volume
-  		})		
- 	}
- 	
- 	toggleScreen(){  //--全屏和退出全屏
- 		let type = this.props.fullscreen ? 'exitFullscreen' : 'fullscreen'
- 		
-		this.props.dispatch({
-			type,
-			...this.state
-		});		
- 	}
- 	
- 	exitFullscreen(){  //---android回退键
- 		this.toggleScreen();
- 		return true;
- 	}
- 	
-	toggleControls(){ //--显示控制条
-		clearTimeout(this.timer);
-		if(this.showControls){
-			this.refs.controls && this.refs.controls.transitionTo({bottom: 0},100,'linear');
-			this.timer = setTimeout(()=>{
-				this.refs.controls && this.refs.controls.transitionTo({bottom: -60},100,'linear');
-				this.showControls = true;
-			},5000)
-		}else{
-			this.refs.controls && this.refs.controls.transitionTo({bottom: -60},100,'linear')	
-		};
-		
-		this.showControls = !this.showControls;
-	}
-	
+  	
  	componentWillReceiveProps(nextProps){  //---接受新属性
 		let current = this.props.player;
 		let next = nextProps.player;
@@ -166,12 +198,9 @@ class Player extends Component{
 	 				this.setState({
 	 					currentTime:next.currentTime,
 	 					paused: this.videoInited ? next.paused : false,
-	 					isStarting: next.isStarting,
+	 					isStarting: true,
 	 					volume : next.volume
 	 				}); 
-	 				
-	 				this.initPaused = next.paused;
-	 				
 				}else{ //--普通屏组件
 	 				this.setState({paused: true}); 				
 				}
@@ -182,7 +211,7 @@ class Player extends Component{
 	 				this.setState({
 	 					currentTime:next.currentTime,
 	 					paused: next.paused,
-	 					isStarting: next.isStarting,
+	 					isStarting: true,
 	 					volume : next.volume
 	 				}); 		
 				}
@@ -202,55 +231,52 @@ class Player extends Component{
 	
  		if(this.changeFullscreen){ //--全屏和普通屏切换
 			if(this.props.player.isFullscreen){ //---切换到全屏
-				if(this.props.fullscreen){
-					this.refs.player && this.refs.player.seek(this.state.currentTime);
+				if(this.props.fullscreen){ //--全屏
 					this.refs.fullscreenBox && this.refs.fullscreenBox.transitionTo({left: 0},100,'linear')				
+					this.refs.webview.postMessage(JSON.stringify({
+						type:'fullscreen',
+						...this.props.player
+					}));
 					BackHandler.addEventListener('hardwareBackPress',this.exitFullscreenHandler) //--注册android回退键
+				}else{
+					this.refs.webview.postMessage(JSON.stringify({
+						type:'toFullscreen',
+						...this.props.player
+					}));					
 				}
 			}else{ //--切换到普通屏
 				if(this.props.fullscreen){ //--全屏组件						
 	 				this.refs.fullscreenBox && this.refs.fullscreenBox.transitionTo({left: -1.2 * width},100,'linear');
-				}else{ //--普通屏组件	
-	 				this.refs.player && this.refs.player.seek(this.state.currentTime);
-				};
-				BackHandler.removeEventListener('hardwareBackPress',this.exitFullscreenHandler)//--注销android回退键
+					this.refs.webview.postMessage(JSON.stringify({
+						type:'exitFullscreen',
+						...this.props.player
+					}));
+				}else{
+					this.refs.webview.postMessage(JSON.stringify({
+						type:'toExitFullscreen',
+						...this.props.player
+					}));					
+				}
 			};
 			
 			this.changeFullscreen = false;
 		}	
  	}
  	
- 	renderTopBar(){ //--全屏模式下显示，上部控制条
- 		let {width} = this.getSizeStyles();
- 		return  <Animatable.View style={[styles.topBar,{width}]}>
- 						<Grid>
- 							<Row>
- 								<Col size={1}>
- 									<TouchableNativeFeedback>
- 										<View style={[{flex:1},global.styles.center]}>
-	 										<Icon name='chevron-left' size={36} color='#fff'/>
- 										</View>
- 									</TouchableNativeFeedback>
- 								</Col>
- 								<Col size={9}></Col>
- 							</Row>
- 						</Grid>
- 				</Animatable.View>
- 	}
-
 	renderLeftIcon(){  //--绘制开始暂停按钮
 		let name = this.state.paused ? 'play-arrow' : 'pause';
-		return	<TouchableNativeFeedback onPress={this.togglePause.bind(this)}>
+		return	<TouchableNativeFeedback onPress={this.togglePaused.bind(this)}>
 		  			<View style={[global.styles.center,{flex:1}]}>
 						<Icon name={name} color='#fff' size={30}/>
 					</View>
 				</TouchableNativeFeedback>
 		
 	}
-
-	renderTimeline(){
-		let percent = this.state.currentTime / this.duration;
-		return <View style={[styles.propgressBar]}>
+	
+	renderTimeline(){  //--绘制时间轴滑块
+		let percent = this.duration ? (this.state.currentTime / this.duration) : 0;
+	
+		return  <View style={[styles.propgressBar]}>
 					<Slider 
 						maximumTrackTintColor='#FE4A4B'
 						minimumTrackTintColor ='#fff'
@@ -260,21 +286,21 @@ class Player extends Component{
 						onValueChange ={this.seeking.bind(this)}
 						onSlidingComplete ={this.seeked.bind(this)}
 					/>
-		      </View>
+				</View>
 	}
 	
-	renderVolumeIcon(){
+	renderVolumeIcon(){ //--绘制音量
 		let name = this.state.volume ? 'volume-up' : 'volume-off';
 		return	<TouchableNativeFeedback onPress={this.toggleVolume.bind(this)}>
 		  			<View style={styles.volume}>
 						<Icon name={name} color='#fff' size={24}/>
 					</View>
 				</TouchableNativeFeedback>
-	}
-
+	}	
+	
 	renderFullscreenIcon(){
 		let name = this.props.fullscreen ? 'arrows-in' : 'arrows-out';
-		return	<TouchableNativeFeedback onPress={this.toggleScreen.bind(this)}>
+		return	<TouchableNativeFeedback onPress={this.toggleFullscreen.bind(this)}>
 		  			<View style={[global.styles.center,{flex:1}]}>
 						<IconF name={name} color='#fff' size={20}/>
 					</View>
@@ -283,7 +309,7 @@ class Player extends Component{
 	
  	renderMainBar(){
   		let {width} = this.getSizeStyles();
- 		return  <Animatable.View ref='controls' style={[styles.bottomBar,{width}]}>
+ 		return  <Animatable.View ref='controls' style={[styles.mainBar,{width}]}>
  					<Grid>
  						<Row>
  							<Col size={1}>{this.renderLeftIcon()}</Col>
@@ -292,13 +318,34 @@ class Player extends Component{
  							<Col size={1}>{this.renderFullscreenIcon()}</Col>
  						</Row>
  					</Grid>
- 				</Animatable.View>	 		
+ 				</Animatable.View>	
+ 				
  	}
  	
- 	renderBottomBar(){
-		return null
- 	}
- 	
+	renderVideo(){
+		let HTML = this.getHtml();
+		let {width,height} = this.getSizeStyles();
+		
+		let mainBar = this.renderMainBar();
+		this.videoInited = true;
+		
+		return 	<TouchableNativeFeedback onPress={this.toggleControls.bind(this)}>
+					<View style={{flex:1}}>
+						<WebView 
+							ref='webview'
+							source={{html:HTML}} 
+							mediaPlaybackRequiresUserAction={false}
+							javaScriptEnabled={true}
+							domStorageEnabled ={true}
+							automaticallyAdjustContentInsets={true}
+							onMessage={this.onMessage.bind(this)}
+							style={{width,height}}
+						/>
+						{mainBar}
+					</View>
+				</TouchableNativeFeedback>
+	}
+	
   	renderStartButton() { //--开始按钮
 	    return  <View style={[{flex:1},global.styles.center]}>
 		    		<TouchableNativeFeedback onPress={this.onStartPress.bind(this)}>
@@ -307,30 +354,8 @@ class Player extends Component{
 		    			</View>
 	      			</TouchableNativeFeedback>
 	      		</View>
-  	}	
+  	}
   	
-	renderVideo(){  //渲染视频
-		let bar = this.renderMainBar();
-		let bar1 = this.props.fullscreen ? null : this.renderBottomBar();
-		this.videoInited = true;
-		
-		return 	<View style={{flex:1}}>
-					<TouchableNativeFeedback onPress={this.toggleControls.bind(this)}>
-						<Video ref='player' style={this.getSizeStyles()}
-							source={this.props.src}
-							paused={this.state.paused}
-							volume={this.state.volume ? 1.0 : 0}
-							resizeMode='contain'
-							onLoad={this.onLoaded.bind(this)}
-							onEnd={this.onEnd.bind(this)}
-							onProgress={this.onProgress.bind(this)}
-						/>
-					</TouchableNativeFeedback>
-					{bar}
-					{bar1}
-				</View>
-	}
-
   	renderThumbnail() {
   		let {poster} = this.props;
     	return  <Image style={styles.thumbnail,this.getSizeStyles()} source={poster} resizeMode='contain'>
@@ -347,9 +372,8 @@ class Player extends Component{
   			result = this.renderStartButton();
   		}else{
   			result = this.renderVideo()
-  		}
-  		
-  		
+  		}		
+		
   		if(this.props.fullscreen){
 			return <Animatable.View ref='fullscreenBox' style={styles.fullscreen}>
 						<View style={styles.rotateBox}>
@@ -361,14 +385,14 @@ class Player extends Component{
   			return <View style={[styles.normalBox,this.getSizeStyles()]}>{result}</View>
   		}
 	}
-};
+}
+
 
 export default connect((state)=>{
 	return {
 		player:state.player
 	}
-})(Player)
-
+})(H5Player)
 
 
 const styles = StyleSheet.create({
@@ -391,6 +415,7 @@ const styles = StyleSheet.create({
 		alignItems:'center',
 		justifyContent:'center',
 		flexDirection:'row',
+		backgroundColor:'yellow'
 	},
 	
 	normalBox:{  //--竖屏容器
@@ -401,13 +426,18 @@ const styles = StyleSheet.create({
 		backgroundColor:'black',
 	},
 	
+	webview:{
+		overflow:'hidden',
+		backgroundColor:'yellow'
+	},
+	
   	thumbnail: { //--封面
   		justifyContent: 'center',
   		alignItems: 'center',
 		flexDirection:'row',
   	},	
   	
-  	playButton: {
+  	playButton: { //--播放按钮
 	    backgroundColor: 'rgba(0, 0, 0, 0.6)',
 	    width: 64,
 	    height: 64,
@@ -420,7 +450,7 @@ const styles = StyleSheet.create({
    		color: 'white',
   	},
   	
-  	bottomBar:{
+  	mainBar:{
   		position:'absolute',
   		left:0,
   		bottom:0,
